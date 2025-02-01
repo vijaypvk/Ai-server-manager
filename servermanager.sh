@@ -13,11 +13,15 @@ log_message() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $level - $message" >> "$LOGFILE"
 }
 
-# Function to display a banner
+# Function to display a fancy banner with Figlet
 display_banner() {
-    echo "========================================"
-    echo "AI Server Assistant"
-    echo "========================================"
+    if command -v figlet &> /dev/null; then
+        figlet "PVK"
+    else
+        echo "========================================"
+        echo "          AI Server Assistant           "
+        echo "========================================"
+    fi
 }
 
 # Function to ask Ollama for a command
@@ -32,18 +36,15 @@ ask_ollama() {
 EOF
     )
 
-    # Send request to Ollama API
     response=$(curl -s -X POST "$OLLAMA_API_URL" -H "Content-Type: application/json" -d "$payload")
     generated_text=$(echo "$response" | jq -r '.response' | head -n 1 | tr -d '\n')
 
-    # Check if the response is empty
     if [[ -z "$generated_text" ]]; then
         log_message "WARNING" "Ollama returned an empty command."
         echo "Error: Ollama did not generate a valid command."
         return 1
     fi
 
-    # Check if the command is safe
     if ! is_command_safe "$generated_text"; then
         log_message "WARNING" "Blocked unsafe command from AI: $generated_text"
         echo "Error: Command is not allowed."
@@ -56,7 +57,7 @@ EOF
 # Function to check if a command is safe
 is_command_safe() {
     local command=$1
-    local safe_keywords=("cpu" "memory" "disk" "ps" "df" "systemctl" "top" "free" "du" "kill" "renice" "htop" "uptime" "vmstat" "iostat")
+    local safe_keywords=("cpu" "memory" "disk" "ps" "df" "systemctl" "top" "free" "du" "kill" "renice" "htop" "uptime" "vmstat" "iostat" "sensors" "netstat" "ip" "ss")
 
     for keyword in "${safe_keywords[@]}"; do
         if [[ "$command" == *"$keyword"* ]]; then
@@ -77,6 +78,12 @@ execute_command() {
         return 1
     fi
 
+    read -p "Are you sure you want to run this command? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then
+        echo "Command execution cancelled."
+        return 1
+    fi
+
     log_message "INFO" "Executing command: $command"
     output=$(eval "$command" 2>&1)
     exit_code=$?
@@ -91,13 +98,17 @@ execute_command() {
 
 # Function to monitor system resources
 monitor_system() {
-    cpu_usage=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+    cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}')
     memory_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
     disk_usage=$(df / | grep / | awk '{print $5}' | sed 's/%//g')
+    network_usage=$(ip -s link show eth0 | awk '/RX:|TX:/ {getline; print $1, $2}')
+    temperature=$(sensors | grep 'Core 0' | awk '{print $3}')
 
     echo "CPU Usage: $cpu_usage%"
     echo "Memory Usage: $memory_usage%"
     echo "Disk Usage: $disk_usage%"
+    echo "Network Usage: $network_usage"
+    echo "CPU Temperature: $temperature"
 
     if (( $(echo "$cpu_usage > 90" | bc -l) )); then
         echo "Alert: CPU usage is high. Consider closing some processes."
@@ -113,7 +124,6 @@ monitor_system() {
 # Main function
 main() {
     display_banner
-
     echo "AI-Driven Server Management Assistant"
     echo "Type 'exit' to quit."
 
@@ -124,23 +134,16 @@ main() {
             break
         fi
 
-        # Step 1: Send input to Ollama to generate a command
         generated_command=$(ask_ollama "$user_input")
 
-        # Check if Ollama returned a valid command
         if [[ "$generated_command" == "Error:"* ]] || [[ -z "$generated_command" ]]; then
             echo "Error: Ollama did not generate a valid command."
             continue
         fi
 
         echo "Generated Command: $generated_command"
+        execute_command "$generated_command"
 
-        # Step 2: Execute the generated command
-        output=$(execute_command "$generated_command")
-        echo "Command Output:"
-        echo "$output"
-
-        # Step 3: Monitor system health
         echo -e "\nSystem Status:"
         monitor_system
     done
